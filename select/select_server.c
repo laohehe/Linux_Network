@@ -2,6 +2,11 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/types.h>
+//#include <stdbool.h>
+
+#define bool int
+#define true 1
+#define false 0
 
 #define MYPORT 8888
 #define BACKLOG 5    //how many pending connections queue will hold
@@ -20,6 +25,9 @@ int main()
 	socklen_t sin_size;
 	int yes = 1, ret, i;
 	char buf[BUF_SIZE];
+	fd_set fdsr;  //数组宏定义,与文件句柄产生联系
+	int maxsock;
+	struct timeval tv;
 	if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1)   //创建socket
 	{
 		perror("socket create error");
@@ -36,4 +44,62 @@ int main()
 	server_addr.sin_addr.s_addr = INADDR_ANY;    //自动填充为本机IP
 	memset(server_addr.sin_zero, '\0', sizeof(server_addr.sin_zero));
 
+	if ( bind(sock_fd, (struct sockaddr *)&server_addr, sizeof(server_addr))== -1)   //绑定
+	{
+		perror("bind fail!\n");
+		exit(1);
+	}
+	if (listen(sock_fd, BACKLOG))  //开始监听
+	{
+		perror("listen fail!\n");
+		exit(1);
+	}
+	printf("listen port %d\n", MYPORT);  //监听成功
+	conn_amount = 0;
+	sin_size = sizeof(client_addr);
+	maxsock = sock_fd;
+
+	while (true)
+	{
+		//initialize file descript set 
+		FD_ZERO(&fdsr);
+		FD_SET(sock_fd, &fdsr);
+		tv.tv_sec = 30;
+		tv.tv_usec = 0;
+		//加入活跃的连接
+		for (i = 0; i < BACKLOG; i++)
+		{
+			if (fd_A[i] != 0)
+			{
+				FD_SET(fd_A[i], &fdsr);
+			}
+		}
+
+		ret = select(maxsock + 1, &fdsr, NULL, NULL, &tv);
+		if (ret < 0)
+		{
+			perror("select error!\n");
+			break;   //退出循环
+		}
+		else if (ret == 0)
+		{
+			printf("select timeout!\n");
+			continue;      //继续循环
+		}
+		//检查集合内的每个socket连接
+		for (int i = 0; i < conn_amount; i++)
+		{
+			if (FD_ISSET(fd_A[i], &fdsr))
+			{
+				ret = recv(fd_A[i], buf, sizeof(buf), 0);
+				if (ret <= 0)
+				{
+					printf("client[%d] close\n", i);
+					close(fd_A[i]);
+					FD_CLR(fd_A[i], &fdsr);    //将该文件描述符从文件描述符集中清除
+					fd_A[i] = 0;
+				}
+			}
+		}
+	}
 }
