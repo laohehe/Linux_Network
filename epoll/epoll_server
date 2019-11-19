@@ -1,0 +1,131 @@
+#include <stdio.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <fcntl.h>   //设置非阻塞
+#include <stdlib.h>
+
+#define MYPORT 6888
+#define LISTENQ 1024
+#define EPOLLSIZE 10 //epoll关注的最多套接字的个数
+#define MAXLINE 10240
+
+int setnonblocking(int sockfd);//设置socket为非阻塞模式
+int handleclient(int connfd);//处理客户端请求
+int main()
+{
+	//创建epoll相关变量
+	struct epoll_event ev;
+	struct epoll_event events[EPOLLSIZE];
+	int epoll_fd;
+	int curfds;    //当前监听的文件描述符个数
+	int nfds;  //发生事件的fd个数
+	//创建socket
+	int listenfd, connfd;
+	int opt = 1;
+	int i;
+	socklen_t socklen = sizeof(struct sockaddr_in);
+	struct sockaddr_in sockaddr_server, sockaddr_client;
+	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+	sockaddr_server.sin_family = AF_INET;
+	sockaddr_server.sin_port = htons(MYPORT);
+	sockaddr_server.sin_addr.s_addr = INADDR_ANY;
+	memset(sockaddr_server.sin_zero, 0, sizeof(sockaddr_server.sin_zero));
+	
+	//2、设置端口复用，非阻塞
+	//setsockopt(listen, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int));
+	if (setnonblocking(listenfd) == -1)
+	{
+		perror("setnonblocking error!");
+		exit(-1);
+	}
+	//socket绑定
+	bind(listenfd, (struct sockaddr *)&sockaddr_server, socklen);
+    
+	//3、设置监听数
+	listen(listenfd, LISTENQ);
+
+	//4、设置epoll 相关
+	epoll_fd = epoll_create(EPOLLSIZE);
+	ev.events = EPOLLIN | EPOLLET;  //是否有文件可读
+	ev.data.fd = listenfd;
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listenfd, &ev);
+	curfds = 1;
+	printf("epoll server startup,port:%d\n",MYPORT);
+
+	while (1)
+	{
+		nfds = epoll_wait(epoll_fd, events, curfds, -1);
+		if (nfds == -1)
+		{
+			perror("epoll wait");
+			continue;
+		}
+		printf("epoll_nfds:%d\n", nfds);
+		for (i = 0; i < nfds; i++)
+		{
+			if (events[i].data.fd == listenfd)   //监听fd
+			{
+				connfd = accept(listenfd, (struct sockaddr *)&sockaddr_client, &socklen);
+				//输出客户端相关信息
+				printf("receive from %s,port:%d\n", inet_ntoa(sockaddr_client.sin_addr), ntohs(sockaddr_client.sin_port));
+
+				//将connfd加入至epoll监听中
+				setnonblocking(connfd);
+				ev.events = EPOLLIN || EPOLLET;
+				ev.data.fd = connfd;
+				epoll_ctl(epoll_fd, EPOLL_CTL_ADD, connfd, &ev);
+				curfds++;//  当前文件描述符个数
+				continue;
+			}
+
+			//处理客户端请求
+			if (handleclient(events[i].data.fd) < 0)
+			{
+				//丢失连接
+				//ev.events = EPOLLIN || EPOLLET;
+				//ev.data.fd = events[i].data.fd;
+				epoll_ctl(epoll_fd,EPOLL_CTL_DEL,events[i].data.fd,NULL);
+				//epoll_ctl(epoll_fd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
+				curfds--;
+			}
+		}
+
+	}
+	close(listenfd);
+	return 0;
+}
+
+/*返回1：正常执行
+  返回-1：失败*/
+int setnonblocking(int sockfd)
+{
+	if (fcntl(sockfd, F_SETFD, fcntl(sockfd, F_GETFD, 0) | O_NONBLOCK) < 0)
+	{
+		return -1;
+	}
+	else
+	{
+		return 1;
+	}
+}
+
+int handleclient(int connfd)
+{
+	int nread;
+	char buf[MAXLINE];
+	nread = recv(connfd, buf, sizeof(buf), 0);
+	if (nread <= 0)
+	{
+		perror("recv error!");
+		return -1;
+	}
+	else
+	{
+		buf[nread] = '\0';
+		printf("client:%s\n", buf);
+		return 1;
+	}
+}
